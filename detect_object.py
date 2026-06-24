@@ -47,7 +47,7 @@ ACTIONS = {
 }
 
 VALID_OBJECTS = set(ACTIONS.keys())
-MIN_AREA = 7000
+MIN_AREA = 3000
 MAX_AREA = 250000
 BLUE_BALL_CIRC = 0.77       # blue: circularity at/above this = ball, below = cube
 
