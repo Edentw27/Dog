@@ -64,6 +64,11 @@ ACTION_IDS = {
     "SPIN / DANCE":  4,    # 4 = circle (clean spin); try 10 = 3-axis rotation for "dance"
 }
 
+# How long (seconds) to let a preset action play before resetting to neutral.
+# Presets take roughly 3-6s. If moves still get cut off, raise this. If the dog
+# pauses too long between actions, lower it.
+ACTION_TIME = 4.0
+
 # Each colour maps to a fixed shape — EXCEPT blue, which needs geometry.
 COLOR_SHAPE = {
     "red":    "ball",
@@ -223,8 +228,8 @@ def do_action(action):
         print(f"  (no action id mapped for {action})")
         return
     try:
-        dog.action(action_id, wait=True)
-        time.sleep(0.5)
+        dog.action(action_id)      # wait=True doesn't block in xgolib 0.3.1
+        time.sleep(ACTION_TIME)    # let the preset finish before resetting
         dog.reset()
     except Exception as e:
         print(f"  robot error: {e}")
