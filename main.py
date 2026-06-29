@@ -40,7 +40,7 @@ COLOR_RANGES = {
     "red":       [([0, 150, 80], [6, 255, 255]), ([170, 150, 80], [180, 255, 255])],
     "yellow":    [([18, 120, 120], [32, 255, 255])],
     "purple":    [([140, 50, 100], [170, 255, 255])],
-    "greencyan": [([38, 55, 45], [92, 255, 255])],    # green ball + cyan "blue" cube
+    "greencyan": [([40, 80, 60], [92, 255, 255])],    # green ball + cyan "blue" cube
     "trueblue":  [([95, 60, 45], [132, 255, 255])],   # real blue ball
 }
 
@@ -73,6 +73,18 @@ ACTION_IDS = {
 # pauses too long between actions, lower it.
 ACTION_TIME = 4.0
 
+# ── Walk-to-object movement settings ──────────────────────────────────
+# All tunable. The dog turns to face the object, then walks forward, and stops
+# when the object looks big enough (= close).
+CENTER_BAND = 0.20    # how centred the object must be before walking forward
+TURN_SPEED  = 35      # turn speed deg/s while aiming at the object
+TURN_SEARCH = 30      # turn speed deg/s while searching (object not in view)
+FWD_STEP    = 12      # forward step size (x translation, max 25)
+CLOSE_AREA  = 30000   # stop when the object's area reaches this (= close enough)
+                      #   stops too far away?  -> RAISE this
+                      #   walks into the object? -> LOWER this
+WALK_TIMEOUT = 45     # give up walking after this many seconds
+
 # ── Shape decision ────────────────────────────────────────────────────
 # A ball is round, a cube is square. We tell them apart by EXTENT = how much
 # of the bounding box the blob fills. A circle fills ~0.78 of its box; a square
@@ -93,6 +105,8 @@ VALID_OBJECTS = set(ACTIONS.keys())
 SCAN_TOP = 0.20
 MIN_AREA = 400             # lowered so far-away (smaller) objects still pass
 MAX_AREA = 250000
+# Reject blobs bigger than this fraction of the view = background, not an object.
+MAX_AREA_FRAC = 0.35
 
 # Path to a bark sound for the red ball (optional). Put a wav next to this file.
 BARK_WAV = os.path.join(os.path.dirname(__file__), "bark.wav")
@@ -125,11 +139,16 @@ def classify(color_name, extent):
     return None
 
 
-def detect_once(frame):
+def detect_targets(frame):
+    """Return a list of {name, cx, area} for every valid object seen.
+    cx is the horizontal offset from centre: -1 = far left, +1 = far right."""
     h, w = frame.shape[:2]
-    roi_frame = frame[int(h * SCAN_TOP):h, 0:w]   # full width, table area
+    roi_frame = frame[int(h * SCAN_TOP):h, 0:w]   # full width, table/floor area
     hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
-    results = []
+    rh, rw = roi_frame.shape[:2]
+    roi_area = rh * rw
+    max_obj_area = MAX_AREA_FRAC * roi_area
+    out = []
 
     for color_name, ranges in COLOR_RANGES.items():
         mask = get_mask(hsv, ranges)
@@ -139,32 +158,33 @@ def detect_once(frame):
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < MIN_AREA or area > MAX_AREA:
+            if area < MIN_AREA or area > max_obj_area:
                 continue
-
             perimeter = cv2.arcLength(cnt, True)
             circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
             if circularity < MIN_CIRC_GENERIC:
-                continue  # reject stringy background noise
-
-            # Solidity: real objects are solid/compact (~0.9+); background
-            # false-positives are ragged. This stops empty-table false hits.
+                continue
             hull_area = cv2.contourArea(cv2.convexHull(cnt))
             solidity = area / hull_area if hull_area > 0 else 0
             if solidity < MIN_SOLIDITY:
                 continue
-
-            # Extent = blob area / bounding-box area → round vs square.
             x, y, bw, bh = cv2.boundingRect(cnt)
             extent = area / (bw * bh) if bw * bh > 0 else 0
+            name = classify(color_name, extent)
+            if name in VALID_OBJECTS:
+                M = cv2.moments(cnt)
+                cx_px = M["m10"] / M["m00"] if M["m00"] else rw / 2
+                cx = (cx_px - rw / 2) / (rw / 2)
+                out.append({"name": name, "cx": cx, "area": area})
+    return out
 
-            obj_name = classify(color_name, extent)
-            if obj_name in VALID_OBJECTS:
-                results.append((obj_name, area))
 
-    if results:
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[0][0]
+def detect_once(frame):
+    """Name of the largest valid object in view, or None."""
+    targets = detect_targets(frame)
+    if targets:
+        targets.sort(key=lambda d: d["area"], reverse=True)
+        return targets[0]["name"]
     return None
 
 
@@ -196,7 +216,56 @@ def scan_for_object(target=None, votes=5, timeout=20):
     return None
 
 
-# ── Voice ─────────────────────────────────────────────────────────────
+def walk_to_object(target, timeout=WALK_TIMEOUT):
+    """Turn to face the target, walk toward it, stop when close.
+    Returns True if it reached the object, False on timeout."""
+    cap = cv2.VideoCapture(0)
+    start = time.time()
+    last = 0.0
+    print(f"  Walking to {target}... (Ctrl+C to stop)")
+    try:
+        while time.time() - start < timeout:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            if time.time() - last < 0.25:
+                continue
+            last = time.time()
+
+            seen = [d for d in detect_targets(frame) if d["name"] == target]
+
+            if not seen:
+                # object not in view → rotate slowly to look for it
+                if ROBOT:
+                    dog.turn(TURN_SEARCH)
+                continue
+
+            obj = max(seen, key=lambda d: d["area"])
+            cx, area = obj["cx"], obj["area"]
+
+            # Simulation (no robot): can't physically walk, so just confirm.
+            if not ROBOT:
+                print(f"  (sim) sees {target} at cx={cx:+.2f}, area={area:.0f}")
+                return True
+
+            if area >= CLOSE_AREA:
+                dog.stop()
+                print("  Arrived at the object.")
+                return True
+
+            if cx < -CENTER_BAND:
+                dog.turn(TURN_SPEED)        # object is left → turn left
+            elif cx > CENTER_BAND:
+                dog.turn(-TURN_SPEED)       # object is right → turn right
+            else:
+                dog.move('x', FWD_STEP)     # centred → walk forward
+        return False
+    finally:
+        cap.release()
+        if ROBOT:
+            dog.stop()
+            time.sleep(0.2)
+            dog.reset()
 def parse_command(text):
     text = text.lower()
     color = next((c for c in VALID_COLORS if c in text), None)
@@ -274,12 +343,11 @@ def main():
                 print("  Try again — e.g. 'fetch blue cube'.")
                 continue
             print(f"  Target: {target}  (action: {ACTIONS.get(target, '?')})")
-            found = scan_for_object(target=target)
-            if found:
-                print(f"  FOUND {found}!")
-                do_action(ACTIONS[found])
+            arrived = walk_to_object(target)
+            if arrived:
+                do_action(ACTIONS[target])
             else:
-                print(f"  Didn't find {target} in time. Try again.")
+                print(f"  Couldn't reach {target} in time. Try again.")
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n  Goodbye.")
