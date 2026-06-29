@@ -236,12 +236,14 @@ def walk_to_object(target, timeout=WALK_TIMEOUT):
 
             if not seen:
                 # object not in view → rotate slowly to look for it
+                print(f"   searching... (don't see {target})")
                 if ROBOT:
                     dog.turn(TURN_SEARCH)
                 continue
 
             obj = max(seen, key=lambda d: d["area"])
             cx, area = obj["cx"], obj["area"]
+            print(f"   see {target}: cx={cx:+.2f}  area={area:.0f}")
 
             # Simulation (no robot): can't physically walk, so just confirm.
             if not ROBOT:
