@@ -103,7 +103,7 @@ VALID_OBJECTS = set(ACTIONS.keys())
 # Scan area: from SCAN_TOP down to the bottom, full width — so an object on the
 # table (off-centre or far) is still inside the search region.
 SCAN_TOP = 0.20
-MIN_AREA = 400             # lowered so far-away (smaller) objects still pass
+MIN_AREA = 200             # lowered so far-away (smaller) objects still pass
 MAX_AREA = 250000
 # Reject blobs bigger than this fraction of the view = background, not an object.
 MAX_AREA_FRAC = 0.35
@@ -250,7 +250,7 @@ def walk_to_object(target, timeout=WALK_TIMEOUT):
                 print(f"  (sim) sees {target} at cx={cx:+.2f}, area={area:.0f}")
                 return True
 
-            if area >= CLOSE_AREA:
+            if area >= CLOSE_AREA and abs(cx) <= CENTER_BAND:
                 dog.stop()
                 print("  Arrived at the object.")
                 return True
